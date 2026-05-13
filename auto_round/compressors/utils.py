@@ -199,6 +199,12 @@ def block_forward(
                         position_ids.to(device),
                         block.self_attn.layer_type,
                     )
+    if (
+        hasattr(block, "self_attn")
+        and hasattr(block.self_attn, "layer_type")
+        and input_others.get("shared_kv_states") is None
+    ):
+        input_others["shared_kv_states"] = {}
     if "alibi" in input_others.keys() and input_others["alibi"] is not None:
         alibi = input_others["alibi"]
         input_others["alibi"] = alibi.reshape(-1, alibi.shape[2], alibi.shape[3])
