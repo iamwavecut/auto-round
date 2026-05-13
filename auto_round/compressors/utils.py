@@ -167,6 +167,38 @@ def block_forward(
         input_ids = to_device(input_ids, device)
         input_others = to_device(input_others, device)
     input_tuple = input_others.pop("positional_inputs", None)
+    # Gemma4 mixes sliding_attention and full_attention layers. AutoRound may
+    # replay a later full-attention decoder layer with the first sliding layer's
+    # cached RoPE tuple, so rebuild the tuple when its last dimension disagrees
+    # with the block's attention head dimension.
+    if (
+        "position_embeddings" in input_others
+        and hasattr(block, "self_attn")
+        and hasattr(block.self_attn, "layer_type")
+        and hasattr(block.self_attn, "head_dim")
+    ):
+        position_embeddings = input_others.get("position_embeddings")
+        if isinstance(position_embeddings, (tuple, list)) and len(position_embeddings) == 2:
+            cos = position_embeddings[0]
+            expected_head_dim = getattr(block.self_attn, "head_dim", None)
+            if hasattr(cos, "shape") and expected_head_dim is not None and cos.shape[-1] != expected_head_dim:
+                position_ids = input_others.get("position_ids")
+                if position_ids is None:
+                    cache_position = input_others.get("cache_position")
+                    if cache_position is not None and hasattr(cache_position, "unsqueeze"):
+                        position_ids = cache_position.unsqueeze(0)
+                if position_ids is not None:
+                    from transformers.models.gemma4.modeling_gemma4 import Gemma4TextRotaryEmbedding
+
+                    rotary_emb = getattr(block, "_autoround_gemma4_rotary_emb", None)
+                    if rotary_emb is None:
+                        rotary_emb = Gemma4TextRotaryEmbedding(block.self_attn.config).to(device)
+                        block._autoround_gemma4_rotary_emb = rotary_emb
+                    input_others["position_embeddings"] = rotary_emb(
+                        input_ids,
+                        position_ids.to(device),
+                        block.self_attn.layer_type,
+                    )
     if "alibi" in input_others.keys() and input_others["alibi"] is not None:
         alibi = input_others["alibi"]
         input_others["alibi"] = alibi.reshape(-1, alibi.shape[2], alibi.shape[3])
